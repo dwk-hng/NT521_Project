@@ -1,4 +1,5 @@
 import base64, os, re, socket, json
+import chardet
 from pathlib import Path
 from collections import Counter
 import math
@@ -11,6 +12,14 @@ ipaddr_regex = re.compile(r'[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}')
 
 # Biểu thức chính quy phức tạp để dò URL (dùng trong contains_URL)
 urls_regex = re.compile(r"""((?:(?:http|http|ssh|ftp|sftp|ws|wss|dns|file|git|jni|imap|ldap|ldaps|nfs|smb|smbs|telnet|udp|vnc)?:(?:/{1,3}|[a-z0-9%])|[a-z0-9.\-]+[.](?:com|org|uk)/)(?:[^\s()<>{}\[\]]+|\([^\s()]*?\([^\s()]+\)[^\s()]*?\)|\([^\s]+?\))+(?:\([^\s()]*?\([^\s()]+\)[^\s()]*?\)|\([^\s]+?\)|[^\s`!()\[\]{};:'".,<>?«»“”‘’])|(?:(?<!@)[a-z0-9]+(?:[.\-][a-z0-9]+)*[.](?:com|uk|ac)\b/?(?!@)))""")
+
+def detect_encoding(data: bytes) -> str:
+    """
+    Phát hiện mã hóa của dữ liệu nhị phân sử dụng chardet.
+    Nếu không thể phát hiện, mặc định là 'utf-8'.
+    """
+    result = chardet.detect(data)
+    return result['encoding'] if result['encoding'] else 'utf-8'
 
 def is_base64(sb):
     """
@@ -292,3 +301,38 @@ def gen_language_16(value):
     
     return (pattern)
 
+# Tính Shannon entropy của chuỗi (dùng trong pypi_feature_extractor.py)
+def compute_entropy(text):
+    """Tính Shannon entropy của chuỗi."""
+    if not text:
+        return 0.0
+    prob = [float(text.count(c)) / len(text) for c in dict.fromkeys(list(text))]
+    entropy = -sum(p * math.log2(p) for p in prob)
+    return round(entropy, 4)
+
+# Phát hiện URL, IP, email trong chuỗi (dùng trong pypi_feature_extractor.py)
+def detect_urls(text):
+    """Phát hiện URL trong chuỗi."""
+    pattern = r'https?://[^\s\'"]+'
+    return re.findall(pattern, text)
+
+# Phát hiện địa chỉ IP trong chuỗi (dùng trong pypi_feature_extractor.py)
+def detect_ips(text):
+    """Phát hiện địa chỉ IPv4."""
+    pattern = r'\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b'
+    return re.findall(pattern, text)
+
+# Phát hiện địa chỉ email trong chuỗi (dùng trong pypi_feature_extractor.py)
+def detect_emails(text):
+    """Phát hiện địa chỉ email."""
+    pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
+    return re.findall(pattern, text)
+
+# Đếm số token nguy hiểm trong chuỗi (dùng trong pypi_feature_extractor.py)
+def count_dangerous_tokens(code, dangerous_tokens):
+    """Đếm số token nguy hiểm xuất hiện trong mã nguồn."""
+    count = 0
+    for token in dangerous_tokens:
+        # đếm không phân biệt hoa thường
+        count += len(re.findall(rf'\b{re.escape(token)}\b', code, flags=re.IGNORECASE))
+    return count

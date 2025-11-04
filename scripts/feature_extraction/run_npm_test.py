@@ -4,7 +4,7 @@ import os
 from npm_feature_extractor import NPM_Feature_Extractor
 
 # Tên thư mục chứa các package mẫu (vẫn là thư mục con so với vị trí hiện tại)
-SAMPLE_DIR = "npm_samples"
+SAMPLE_DIR = os.path.join(os.path.dirname(__file__), "npm_samples")
 
 if not os.path.exists(SAMPLE_DIR):
     print(f"Lỗi: Không tìm thấy thư mục '{SAMPLE_DIR}'.")

@@ -2,3 +2,7 @@ nltk
 pandas
 pygments
 urlextract
+numpy
+chardet
+tldextract
+regex
