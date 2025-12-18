@@ -40,15 +40,8 @@ class PyPI_Feature_Extractor:
     ARCHIVE_EXTENSIONS = (".tar.gz", ".zip", ".whl")
 
     def __init__(self) -> None:
-        # Danh sách extension cho PyPI
-        # Bao gồm các loại file mã nguồn Python, metadata, nén và các file nhị phân/tài liệu phổ biến
-        # Các phần mở rộng file nén (.zip, .tar, .gz) vẫn có trong self.classes
-        # để đếm các file nén bên trong một gói đã giải nén (nếu có),
-        # nhưng sẽ được lọc riêng nếu đó là file nén gốc ở cấp root.
-        self.classes = [
-            'py','pyc','pyd','so','whl','egg','txt','md','rst','cfg','ini','toml','yml','yaml','json',
-            'c','cpp','h','data','dat','bin','exe','dll','zip','tar','gz','bz2'
-        ]
+        # Danh sách extension đầy đủ cho PyPI (tương thích với cross-language dataset)
+        self.classes = ['bat',	'bz2',	'c', 'cert','conf','cpp' ,'crt', 'css',	'csv', 'deb' ,'erb','gemspec', 'gif', 'gz', 'h', 'html', 'ico' ,'ini' ,'jar', 'java', 'jpg', 'js', 'json', 'key' ,'m4v' ,'markdown' ,'md' ,'pdf', 'pem', 'png', 'ps', 'py',	'rb', 'rpm', 'rst','sh'	,'svg',	'toml',	'ttf',	'txt','xml', 'yaml', 'yml', 'eot', 'exe', 'jpeg', 'properties',	'sql',	'swf',	'tar',	'woff', 'woff2', 'aac','bmp', 'cfg' ,'dcm', 'dll', 'doc', 'flac','flv',	'ipynb', 'm4a', 'mid', 'mkv', 'mp3', 'mp4', 'mpg', 'ogg','otf', 'pickle', 'pkl' ,'psd',	'pxd' ,'pxi', 'pyc', 'pyx', 'r', 'rtf',	'so', 'sqlite' ,'tif',	'tp', 'wav', 'webp' ,'whl', 'xcf', 'xz', 'zip' ,'mov' ,'wasm', 'webm']
 
         # Đường dẫn gốc để quét (được gán khi gọi extract_features)
         self.path_to_scan: Optional[str] = None
@@ -86,31 +79,20 @@ class PyPI_Feature_Extractor:
         extensions_files_df = self.count_package_files_extension()
 
         # Gộp các DataFrame theo 'Package Name' (outer join để giữ tất cả các package)
-        # Bắt đầu với py_files_df, sau đó merge lần lượt
-        final_df = py_files_df
-        if not metadata_df.empty:
-            final_df = pd.merge(final_df, metadata_df, on=['Package Name'], how='outer', suffixes=('_py', '_meta'))
-        else:
-            for col in ['has_install_requires', 'has_entry_points', 'risky_install_code', 'metadata_text']:
-                final_df[col] = np.nan
-            
-        if not extensions_files_df.empty:
-            final_df = pd.merge(final_df, extensions_files_df, on=['Package Name'], how='outer')
-        else:
-             for ext_col in ['.' + c for c in self.classes]:
-                 final_df[ext_col] = 0
-
-        required_for_extraction_py = ['Number of Words_py', 'lines_py', 'base64_py', 'IP_py', 'suspicious_tokens_py', 'URLs_in_strings_py', 'emails_in_file_py', 'strings_py', 'identifiers_py']
-        for col in required_for_extraction_py:
-            if col not in final_df.columns:
-                final_df[col] = np.nan
+        dfs = [py_files_df, metadata_df, extensions_files_df]
+        dfs = [df for df in dfs if not df.empty]  # Chỉ giữ các DataFrame không rỗng
         
-        required_for_extraction_meta = ['has_install_requires', 'has_entry_points', 'risky_install_code', 'metadata_text']
-        for col in required_for_extraction_meta:
-            if col not in final_df.columns:
-                final_df[col] = np.nan
+        if len(dfs) > 1:
+            final_df = reduce(lambda left, right: pd.merge(left, right, on=['Package Name'], how='outer'), dfs)
+        elif len(dfs) == 1:
+            final_df = dfs[0]
+        else:
+            # Trường hợp không có dữ liệu nào
+            final_df = pd.DataFrame(columns=['Package Name'])
         
-        final_df = final_df.fillna(0)
+        # Fill NA cho các cột numeric (không fill cho strings/identifiers)
+        numeric_cols = final_df.select_dtypes(include=[np.number]).columns
+        final_df[numeric_cols] = final_df[numeric_cols].fillna(0)
 
         final_df = self.extraction(final_df, gen_language_4, 4, gen_language_4, 4)
 
@@ -155,7 +137,7 @@ class PyPI_Feature_Extractor:
 
     def extract_feature_from_py(self) -> pd.DataFrame:
         """
-        Trích xuất feature từ tất cả file .py.
+        Trích xuất feature từ tất cả file .py bao gồm cả các ratio (plus, equal, bracket).
         """
         files_path = find_files_of_ext(self.path_to_scan, ".py")
 
@@ -170,6 +152,9 @@ class PyPI_Feature_Extractor:
         ip_counts = []
         url_counts_in_strings = []
         email_counts_in_file = []
+        plus_ratio = []
+        equal_ratio = []
+        square_ratio = []
         code_list = []
 
         print(f"[*] Found {len(files_path)} Python files.")
@@ -199,32 +184,42 @@ class PyPI_Feature_Extractor:
 
                 ids = []
                 strs = []
+                operator = []
+                punctuation = []
 
                 for tok_type, tok_val in token_source:
-                    if tok_type in Token.Name:
+                    if tok_type in Token.Operator:
+                        operator.append(tok_val)
+                    elif tok_type in Token.Punctuation:
+                        punctuation.append(tok_val)
+                    elif tok_type in Token.Name:
                         if tok_val and not tok_val.isspace():
                             ids.append(tok_val)
                     elif tok_type in (Token.Literal.String.Single, Token.Literal.String.Double,
                                       Token.Literal.String.Heredoc, Token.Literal.String):
                         if tok_val and not tok_val.isspace():
-                            cleaned_str = tok_val.strip()
-                            if cleaned_str.startswith(('"', "'")):
-                                cleaned_str = cleaned_str[1:]
-                            if cleaned_str.endswith(('"', "'")):
-                                cleaned_str = cleaned_str[:-1]
-                            strs.append(cleaned_str)
+                            strs.append(tok_val)
 
                 num_lines = data.count("\n") + 1
                 size_chars = len(data) if len(data) > 0 else 1
 
+                # Tính toán các ratio cho operators và punctuation
+                equalities = operator.count('=') / size_chars
+                plus = operator.count('+') / size_chars
+                Lbrackets = punctuation.count('[') / size_chars
+
+                # Làm sạch ids và strs
+                ids = [s.replace("'", '').replace('"', '') for s in ids]
+                strs = [s.replace("'", '').replace('"', '') for s in strs]
+
                 count_base64_in_strs = sum(len(contains_base64(s)) for s in strs)
                 count_ip_in_strs = sum(len(contains_IPAddress(s)) for s in strs)
-                count_url_in_strs = sum(len(contains_URL(s)) for s in strs)
+                count_url_in_strs = 0  # Sẽ tính trong extraction()
                 count_emails = len(re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', data))
                 count_dangerous = len(contains_dangerous_token(data, self.dangerous_token))
 
-                ids_join = ' '.join([s.replace("'", "").replace('"', "") for s in ids])
-                string_join = ' '.join(list(set([s.replace("'", "").replace('"', "") for s in strs])))
+                ids_join = ' '.join(ids)
+                string_join = ' '.join(strs)
 
                 Package.append(package_name)
                 pyfile.append(py_name)
@@ -235,6 +230,9 @@ class PyPI_Feature_Extractor:
                 ip_counts.append(count_ip_in_strs)
                 url_counts_in_strings.append(count_url_in_strs)
                 email_counts_in_file.append(count_emails)
+                plus_ratio.append(plus)
+                equal_ratio.append(equalities)
+                square_ratio.append(Lbrackets)
                 identifiers_list.append(ids_join)
                 strings_list.append(string_join)
                 code_list.append(data)
@@ -253,6 +251,9 @@ class PyPI_Feature_Extractor:
             'IP_py': ip_counts,
             'URLs_in_strings_py': url_counts_in_strings,
             'emails_in_file_py': email_counts_in_file,
+            'plus_ratio': plus_ratio,
+            'equal_ratio': equal_ratio,
+            'bracket_ratio': square_ratio,
             'identifiers_py': identifiers_list,
             'strings_py': strings_list,
             'code_py': code_list
@@ -262,155 +263,234 @@ class PyPI_Feature_Extractor:
 
     def merge_py_of_same_package(self, database: pd.DataFrame) -> pd.DataFrame:
         """
-        Gộp nhiều file .py của cùng 1 package thành 1 record package-level.
+        Gộp nhiều file .py của cùng 1 package thành 1 record package-level với đầy đủ ratio features.
         """
         if database.empty:
-            cols = ['Package Name','Number of Words_py','lines_py','base64_py','IP_py',
-                    'suspicious_tokens_py','URLs_in_strings_py','emails_in_file_py',
-                    'strings_py','identifiers_py']
+            cols = ['Package Name','Number of words','lines','plus ratio mean','plus ratio max','plus ratio std','plus ratio q3',
+                    'eq ratio mean','eq ratio max','eq ratio std','eq ratio q3','bracket ratio mean','bracket ratio max',
+                    'bracket ratio std','bracket ratio q3','base64','IP','sospicious token','strings','identifiers']
             return pd.DataFrame(columns=cols)
 
         p_database_code = database.groupby(['Package Name'], as_index=False)['code_py'].agg('\n'.join)
-        p_database_code['Number of Words_py'] = p_database_code["code_py"].apply(lambda n: len(str(n).split()))
+        p_database_code['Number of words'] = p_database_code["code_py"].apply(lambda n: len(n.split()))
 
         l_database = database.groupby(['Package Name'], as_index=False)['lines_py'].sum()
+        
+        # Tính toán mean, max, std, q3 cho plus ratio
+        plus_mean = database.groupby(['Package Name'], as_index=False)['plus_ratio'].mean()
+        plus_mean = plus_mean.rename(columns={"plus_ratio": "plus ratio mean"})
+        plus_max = database.groupby(['Package Name'], as_index=False)['plus_ratio'].max()
+        plus_max = plus_max.rename(columns={"plus_ratio": "plus ratio max"})
+        plus_std = database.groupby(['Package Name'], as_index=False)['plus_ratio'].std()
+        plus_std = plus_std.rename(columns={"plus_ratio": "plus ratio std"})
+        plus_q3 = database.groupby(['Package Name'], as_index=False)['plus_ratio'].quantile(0.75)
+        plus_q3 = plus_q3.rename(columns={"plus_ratio": "plus ratio q3"})
+        
+        # Tính toán mean, max, std, q3 cho equal ratio
+        eq_mean = database.groupby(['Package Name'], as_index=False)['equal_ratio'].mean()
+        eq_mean = eq_mean.rename(columns={"equal_ratio": "eq ratio mean"})
+        eq_max = database.groupby(['Package Name'], as_index=False)['equal_ratio'].max()
+        eq_max = eq_max.rename(columns={"equal_ratio": "eq ratio max"})
+        eq_std = database.groupby(['Package Name'], as_index=False)['equal_ratio'].std()
+        eq_std = eq_std.rename(columns={"equal_ratio": "eq ratio std"})
+        eq_q3 = database.groupby(['Package Name'], as_index=False)['equal_ratio'].quantile(0.75)
+        eq_q3 = eq_q3.rename(columns={"equal_ratio": "eq ratio q3"})
+        
+        # Tính toán mean, max, std, q3 cho bracket ratio
+        bracket_mean = database.groupby(['Package Name'], as_index=False)['bracket_ratio'].mean()
+        bracket_mean = bracket_mean.rename(columns={"bracket_ratio": "bracket ratio mean"})
+        bracket_max = database.groupby(['Package Name'], as_index=False)['bracket_ratio'].max()
+        bracket_max = bracket_max.rename(columns={"bracket_ratio": "bracket ratio max"})
+        bracket_std = database.groupby(['Package Name'], as_index=False)['bracket_ratio'].std()
+        bracket_std = bracket_std.rename(columns={"bracket_ratio": "bracket ratio std"})
+        bracket_q3 = database.groupby(['Package Name'], as_index=False)['bracket_ratio'].quantile(0.75)
+        bracket_q3 = bracket_q3.rename(columns={"bracket_ratio": "bracket ratio q3"})
+        
         base = database.groupby(['Package Name'], as_index=False)['base64_py'].sum()
         ip = database.groupby(['Package Name'], as_index=False)['IP_py'].sum()
         sospicious = database.groupby(['Package Name'], as_index=False)['suspicious_tokens_py'].sum()
-        urls = database.groupby(['Package Name'], as_index=False)['URLs_in_strings_py'].sum()
-        emails = database.groupby(['Package Name'], as_index=False)['emails_in_file_py'].sum()
         
         string = database.groupby(['Package Name'], as_index=False)['strings_py'].agg(' '.join)
         identifier = database.groupby(['Package Name'], as_index=False)['identifiers_py'].agg(' '.join)
 
-        data_to_merge = [p_database_code, l_database, base, ip, sospicious, urls, emails, string, identifier]
+        data_to_merge = [p_database_code, l_database, plus_mean, plus_max, plus_std, plus_q3,
+                        eq_mean, eq_max, eq_std, eq_q3, bracket_mean, bracket_max, bracket_std, bracket_q3,
+                        base, ip, sospicious, string, identifier]
         final_database = reduce(lambda left, right: pd.merge(left, right, on=['Package Name'], how='outer'), data_to_merge)
 
         if 'code_py' in final_database.columns:
             final_database.drop('code_py', axis=1, inplace=True)
         
-        final_database.columns = ['Package Name','Number of Words_py','lines_py','base64_py','IP_py',
-                                  'suspicious_tokens_py','URLs_in_strings_py','emails_in_file_py',
-                                  'strings_py','identifiers_py']
+        final_database.columns = ['Package Name','Number of words','lines','plus ratio mean','plus ratio max','plus ratio std','plus ratio q3',
+                                  'eq ratio mean','eq ratio max','eq ratio std','eq ratio q3','bracket ratio mean','bracket ratio max',
+                                  'bracket ratio std','bracket ratio q3','base64','IP','sospicious token','strings','identifiers']
         return final_database
 
     def extract_feature_from_setup(self) -> pd.DataFrame:
         """
-        Dò tất cả file metadata quan trọng của PyPI: setup.py, pyproject.toml, setup.cfg.
+        Trích xuất features từ file setup.py (tương tự extract_feature_from_py nhưng chỉ cho setup.py).
         """
-        setup_files_paths = []
-        setup_files_paths.extend(find_files_of_ext(self.path_to_scan, "setup.py"))
-        setup_files_paths.extend(find_files_of_ext(self.path_to_scan, "pyproject.toml"))
-        setup_files_paths.extend(find_files_of_ext(self.path_to_scan, "setup.cfg"))
+        files_path = find_files_of_ext(self.path_to_scan, ".py")
+        
+        # Lọc chỉ lấy file setup.py
+        setup_files = [fp for fp in files_path if Path(fp).name == 'setup.py']
 
         Package = []
-        meta_file_name = []
-        has_install_requires = []
-        has_entry_points = []
-        risky_calls = []
-        metadata_text = []
+        pyfile = []
+        strings_list = []
+        identifiers_list = []
+        suspicious_tokens = []
+        lines = []
+        num_chars = []
+        base64_counts = []
+        ip_counts = []
+        url_counts_in_strings = []
+        email_counts_in_file = []
+        plus_ratio = []
+        equal_ratio = []
+        square_ratio = []
+        code_list = []
 
-        print(f"[*] Found {len(setup_files_paths)} metadata files.")
+        print(f"[*] Found {len(setup_files)} setup.py files.")
 
-        for fp in setup_files_paths:
+        for fp in setup_files:
             p = Path(fp)
-            # BỎ QUA CÁC FILE NÉN GỐC Ở ĐÂY
+            # BỎ QUA CÁC FILE NÉN GỐC
             if p.parent == Path(self.path_to_scan) and p.name.lower().endswith(self.ARCHIVE_EXTENSIONS):
                 continue
+
             try:
                 try:
                     package_name = str(p.relative_to(self.path_to_scan).parts[0])
                 except ValueError:
                     package_name = p.parent.name
                 
+                py_name = p.name
+
+                with open(fp, "rb") as f:
+                    raw_data = f.read()
+
+                encoding = detect_encoding(raw_data)
+                data = raw_data.decode(encoding, errors='ignore')
+
+                lexer = PythonLexer(stripnl=False, ensurenl=False)
+                token_source = lexer.get_tokens(data)
+
+                ids = []
+                strs = []
+                operator = []
+                punctuation = []
+
+                for tok_type, tok_val in token_source:
+                    if tok_type in Token.Operator:
+                        operator.append(tok_val)
+                    elif tok_type in Token.Punctuation:
+                        punctuation.append(tok_val)
+                    elif tok_type in Token.Name:
+                        if tok_val and not tok_val.isspace():
+                            ids.append(tok_val)
+                    elif tok_type in (Token.Literal.String.Single, Token.Literal.String.Double,
+                                      Token.Literal.String.Heredoc, Token.Literal.String):
+                        if tok_val and not tok_val.isspace():
+                            strs.append(tok_val)
+
+                num_lines = data.count("\n") + 1
+                size_chars = len(data) if len(data) > 0 else 1
+
+                # Tính toán các ratio
+                equalities = operator.count('=') / size_chars
+                plus = operator.count('+') / size_chars
+                Lbrackets = punctuation.count('[') / size_chars
+
+                # Làm sạch
+                ids = [s.replace("'", '').replace('"', '') for s in ids]
+                strs = [s.replace("'", '').replace('"', '') for s in strs]
+
+                count_base64_in_strs = sum(len(contains_base64(s)) for s in strs)
+                count_ip_in_strs = sum(len(contains_IPAddress(s)) for s in strs)
+                count_url_in_strs = 0
+                count_emails = len(re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', data))
+                count_dangerous = len(contains_dangerous_token(data, self.dangerous_token))
+
+                ids_join = ' '.join(ids)
+                string_join = ' '.join(strs)
+
                 Package.append(package_name)
-                meta_file_name.append(p.name)
-
-                with open(fp, "r", encoding="utf-8", errors='ignore') as f:
-                    text = f.read()
-                metadata_text.append(text)
-
-                has_req = 0
-                has_entry = 0
-                risky = 0
-
-                if p.name.lower() == "pyproject.toml" or p.name.lower() == "setup.cfg":
-                    if re.search(r"install_requires|dependencies", text, re.IGNORECASE):
-                        has_req = 1
-                    if re.search(r"entry_points|scripts|console_scripts", text, re.IGNORECASE):
-                        has_entry = 1
-                    if re.search(r"(os\.system|subprocess|exec|eval|base64\.b64decode|urllib|requests\.get)", text, re.IGNORECASE):
-                        risky = 1
-                elif p.name.lower() == "setup.py":
-                    try:
-                        tree = ast.parse(text)
-                        for node in ast.walk(tree):
-                            if isinstance(node, ast.Call) and \
-                                (isinstance(node.func, ast.Name) and node.func.id == "setup") or \
-                                (isinstance(node.func, ast.Attribute) and node.func.attr == "setup"):
-                                for kw in node.keywords:
-                                    if kw.arg in ("install_requires", "requires", "setup_requires", "extras_require"):
-                                        has_req = 1
-                                    if kw.arg in ("entry_points", "scripts", "console_scripts"):
-                                        has_entry = 1
-                                    if kw.arg == "cmdclass":
-                                        risky = 1
-                            
-                            if isinstance(node, ast.Call):
-                                func_name = None
-                                if isinstance(node.func, ast.Name):
-                                    func_name = node.func.id
-                                elif isinstance(node.func, ast.Attribute):
-                                    func_name = node.func.attr
-                                    if isinstance(node.func.value, ast.Name):
-                                        if node.func.value.id == 'os' and func_name == 'system': risky = 1
-                                        if node.func.value.id == 'subprocess' and func_name in ['run', 'Popen', 'call']: risky = 1
-                                        if node.func.value.id == 'base64' and func_name == 'b64decode': risky = 1
-                                if func_name in ("exec", "eval", "compile"): risky = 1
-
-                    except SyntaxError as se:
-                        print(f"[WARN] SyntaxError in {fp}: {se}. Falling back to regex scan.")
-                        if re.search(r"(os\.system|subprocess|exec|eval|base64\.b64decode|urllib|requests\.get)", text, re.IGNORECASE):
-                            risky = 1
-                    except Exception as ex:
-                        print(f"[WARN] Unexpected error during AST parsing for {fp}: {ex}. Falling back to regex scan.")
-                        if re.search(r"(os\.system|subprocess|exec|eval|base64\.b64decode|urllib|requests\.get)", text, re.IGNORECASE):
-                            risky = 1
-
-                has_install_requires.append(has_req)
-                has_entry_points.append(has_entry)
-                risky_calls.append(risky)
+                pyfile.append(py_name)
+                suspicious_tokens.append(count_dangerous)
+                lines.append(num_lines)
+                num_chars.append(size_chars)
+                base64_counts.append(count_base64_in_strs)
+                ip_counts.append(count_ip_in_strs)
+                url_counts_in_strings.append(count_url_in_strs)
+                email_counts_in_file.append(count_emails)
+                plus_ratio.append(plus)
+                equal_ratio.append(equalities)
+                square_ratio.append(Lbrackets)
+                identifiers_list.append(ids_join)
+                strings_list.append(string_join)
+                code_list.append(data)
 
             except Exception as e:
-                print(f"[WARN] Error processing metadata file '{fp}': {e}")
+                print(f"[WARN] Error processing setup.py file '{fp}': {e}")
                 continue
 
         db = pd.DataFrame({
             'Package Name': Package,
-            'meta_file_name': meta_file_name,
-            'has_install_requires': has_install_requires,
-            'has_entry_points': has_entry_points,
-            'risky_install_code': risky_calls,
-            'metadata_text': metadata_text
+            'py_file_name': pyfile,
+            'suspicious_tokens_py': suspicious_tokens,
+            'lines_py': lines,
+            'num_chars_py': num_chars,
+            'base64_py': base64_counts,
+            'IP_py': ip_counts,
+            'URLs_in_strings_py': url_counts_in_strings,
+            'emails_in_file_py': email_counts_in_file,
+            'plus_ratio': plus_ratio,
+            'equal_ratio': equal_ratio,
+            'bracket_ratio': square_ratio,
+            'identifiers_py': identifiers_list,
+            'strings_py': strings_list,
+            'code_py': code_list
         })
-        
-        return self.p_db_benign_md(db)
 
-    def p_db_benign_md(self, database: pd.DataFrame) -> pd.DataFrame:
+        return self.merge_setup_of_same_package(db)
+
+    def merge_setup_of_same_package(self, database: pd.DataFrame) -> pd.DataFrame:
         """
-        Gộp các hàng metadata của cùng 1 package thành 1 record package-level.
+        Gộp các file setup.py của cùng 1 package (không có ratio features như .py files).
         """
         if database.empty:
-            cols = ['Package Name','has_install_requires','has_entry_points','risky_install_code','metadata_text']
+            cols = ['Package Name','Number of words','lines','base64','IP','sospicious token','strings','identifiers']
             return pd.DataFrame(columns=cols)
 
-        p_database = database.groupby(['Package Name'], as_index=False).agg({
-            'metadata_text': '\n'.join,
-            'has_install_requires': 'max',
-            'has_entry_points': 'max',
-            'risky_install_code': 'max'
+        p_database_code = database.groupby(['Package Name'], as_index=False)['code_py'].agg('\n'.join)
+        p_database_code['Number of words'] = p_database_code["code_py"].apply(lambda n: len(n.split()))
+        
+        l_database = database.groupby(['Package Name'], as_index=False)['lines_py'].sum()
+        base = database.groupby(['Package Name'], as_index=False)['base64_py'].sum()
+        ip = database.groupby(['Package Name'], as_index=False)['IP_py'].sum()
+        sospicious = database.groupby(['Package Name'], as_index=False)['suspicious_tokens_py'].sum()
+        string = database.groupby(['Package Name'], as_index=False)['strings_py'].agg(' '.join)
+        identifier = database.groupby(['Package Name'], as_index=False)['identifiers_py'].agg(' '.join)
+
+        data_to_merge = [p_database_code[['Package Name', 'Number of words']], l_database, base, ip, sospicious, 
+                        string[['Package Name', 'strings_py']], identifier[['Package Name', 'identifiers_py']]]
+        final_database = reduce(lambda left, right: pd.merge(left, right, on=['Package Name'], how='outer'), data_to_merge)
+        
+        # Rename columns
+        final_database = final_database.rename(columns={
+            'lines_py': 'lines',
+            'base64_py': 'base64',
+            'IP_py': 'IP',
+            'suspicious_tokens_py': 'sospicious token',
+            'strings_py': 'strings',
+            'identifiers_py': 'identifiers'
         })
-        return p_database
+        
+        final_database.columns = ['Package Name','Number of words','lines','base64','IP','sospicious token','strings','identifiers']
+        return final_database
+
+
 
     def count_package_files_extension(self) -> pd.DataFrame:
         """
@@ -454,19 +534,47 @@ class PyPI_Feature_Extractor:
 
     def extraction(self, database: pd.DataFrame, alphabetic_string_func, base_string_val, alphabetic_id_func, base_id_val) -> pd.DataFrame:
         """
-        Tính các feature nâng cao.
+        Tính các feature nâng cao theo format của cross-language dataset.
         """
-        for col_name in ['strings_py', 'identifiers_py', 'metadata_text']:
-            if col_name in database.columns:
-                database[col_name] = database[col_name].apply(lambda x: '' if pd.isna(x) else str(x))
-            else:
-                database[col_name] = ''
+        # Thêm cột repository cho PyPI
+        database['repository'] = pd.Series([2 for x in range(len(database.index))])
+        
+        # Fill NA cho các cột numeric
+        f = [c for c in database.columns if c not in ['strings_x','identifiers_x','strings_y','identifiers_y']]
+        database[f] = database[f].fillna(0)
 
         database.index = range(0, len(database))
 
-        source_code_strings = database['strings_py']
-        source_code_identifiers = database['identifiers_py']
-        metadata_content = database['metadata_text']
+        # Xác định tên cột strings và identifiers (có thể có suffix _x/_y hoặc không)
+        if 'strings_x' in database.columns:
+            source_code_strings = database['strings_x']
+        elif 'strings' in database.columns:
+            source_code_strings = database['strings']
+        else:
+            source_code_strings = pd.Series(['' for _ in range(len(database))])
+        
+        if 'identifiers_x' in database.columns:
+            source_code_identifiers = database['identifiers_x']
+        elif 'identifiers' in database.columns:
+            source_code_identifiers = database['identifiers']
+        else:
+            source_code_identifiers = pd.Series(['' for _ in range(len(database))])
+        
+        if 'strings_y' in database.columns:
+            metadata_strings = database['strings_y']
+        else:
+            metadata_strings = pd.Series(['' for _ in range(len(database))])
+        
+        if 'identifiers_y' in database.columns:
+            metadata_identifiers = database['identifiers_y']
+        else:
+            metadata_identifiers = pd.Series(['' for _ in range(len(database))])
+        
+        repository = database['repository']
+        check_metadata_strings = metadata_strings.isna()
+        check_metadata_identifiers = metadata_identifiers.isna()
+        check_source_code_strings = source_code_strings.isna()
+        check_source_code_identifiers = source_code_identifiers.isna()
 
         shannon_q3_id_sc = []; shannon_q3_str_sc = []; shannon_mean_id_sc = []; shannon_mean_str_sc = []
         shannon_std_id_sc = []; shannon_std_str_sc = []; shannon_max_id_sc = []; shannon_max_str_sc = []
@@ -483,9 +591,25 @@ class PyPI_Feature_Extractor:
         for i in range(len(database)):
             package_name = database['Package Name'].iloc[i]
             print(f"[+] Calculating advanced features for package: '{package_name}'")
-
-            strings_sc = source_code_strings.iloc[i].split() if source_code_strings.iloc[i] else []
-            identifiers_sc = source_code_identifiers.iloc[i].split() if source_code_identifiers.iloc[i] else []
+            
+            # Xác định entry points dựa trên repository
+            if repository[i] == 3:
+                install = ['extensions']
+            elif repository[i] == 2:
+                install = ['install']
+            else:
+                install = ['postinstall', 'preinstall', 'install']
+            
+            # Source code processing
+            if check_source_code_strings[i] == False:
+                strings_sc = source_code_strings.iloc[i].split()
+            else:
+                strings_sc = []
+            
+            if check_source_code_identifiers[i] == False:
+                identifiers_sc = source_code_identifiers.iloc[i].split()
+            else:
+                identifiers_sc = []
 
             generalized_id_sc = [alphabetic_id_func(x) for x in identifiers_sc]
             generalized_str_sc = [alphabetic_string_func(s) for s in strings_sc]
@@ -518,12 +642,25 @@ class PyPI_Feature_Extractor:
                 except Exception:
                     current_url_count_sc += len(contains_URL(s))
             url_count_sc.append(current_url_count_sc)
+            
+            # Metadata processing
+            if check_metadata_strings[i] == False:
+                strings_md = metadata_strings.iloc[i].split()
+            else:
+                strings_md = []
+            
+            if check_metadata_identifiers[i] == False:
+                identifiers_md = metadata_identifiers.iloc[i].split()
+                if any(f in identifiers_md for f in install) == True:
+                    install_script = 1
+                else:
+                    install_script = 0
+            else:
+                identifiers_md = []
+                install_script = 0
 
-            meta_text_content = metadata_content.iloc[i]
-            meta_words = meta_text_content.split() if meta_text_content else []
-
-            generalized_id_md = [alphabetic_id_func(x) for x in meta_words]
-            generalized_str_md = [alphabetic_string_func(s) for s in meta_words]
+            generalized_id_md = [alphabetic_id_func(x) for x in identifiers_md]
+            generalized_str_md = [alphabetic_string_func(s) for s in strings_md]
 
             obf_score_id_md = obfuscation(generalized_id_md, symbols=['u','d','l','s'])
             obf_score_str_md = obfuscation(generalized_str_md, symbols=['u','d','l','s'])
@@ -547,16 +684,14 @@ class PyPI_Feature_Extractor:
             heterogeneous_str_md.append(obf_score_str_md)
 
             current_url_count_md = 0
-            try:
-                current_url_count_md += len(self.url_extractor.find_urls(meta_text_content))
-            except Exception:
-                current_url_count_md += len(contains_URL(meta_text_content))
+            for s in strings_md:
+                try:
+                    current_url_count_md += len(self.url_extractor.find_urls(s))
+                except Exception:
+                    current_url_count_md += len(contains_URL(s))
             url_count_md.append(current_url_count_md)
 
-            install_flag = max(database['has_install_requires'].iloc[i], 
-                               database['has_entry_points'].iloc[i], 
-                               database['risky_install_code'].iloc[i])
-            presence_of_installation_script.append(install_flag)
+            presence_of_installation_script.append(install_script)
         
         pd.options.mode.chained_assignment = None
         warnings.simplefilter(action='ignore', category=pd.errors.PerformanceWarning)
@@ -590,23 +725,51 @@ class PyPI_Feature_Extractor:
         database['URLs in metadata'] = url_count_md
         database['heteregeneous identifiers in metadata'] = heterogeneous_id_md
 
-        for c in ['strings_py', 'identifiers_py', 'metadata_text', 'meta_file_name',
-                  'has_install_requires', 'has_entry_points', 'risky_install_code', 'py_file_name', 'code_py',
-                  'num_chars_py']:
-            if c in database.columns:
-                database.drop(c, axis=1, inplace=True)
+        # Drop các cột không cần thiết (chỉ drop nếu tồn tại)
+        cols_to_drop = ['strings_x', 'strings_y','identifiers_x','identifiers_y',
+                       'has_install_requires', 'has_entry_points', 'risky_install_code', 'metadata_text',
+                       'Number of Words_py', 'lines_py', 'base64_py', 'IP_py', 'suspicious_tokens_py',
+                       'URLs_in_strings_py', 'emails_in_file_py', 'strings_py', 'identifiers_py']
+        existing_cols_to_drop = [c for c in cols_to_drop if c in database.columns]
+        if existing_cols_to_drop:
+            database.drop(existing_cols_to_drop, axis=1, inplace=True)
         
+        # Remove duplicates (không dùng subset vì có thể không tồn tại tất cả các cột)
+        # Chỉ drop duplicate nếu tất cả các giá trị của package giống hệt nhau
+        database = database.drop_duplicates(keep='first')
+        
+        # Rename columns để match với format của labelled dataset (chỉ rename nếu tồn tại)
         rename_map = {
-            'Number of Words_py': 'Number of Words in source code',
-            'lines_py': 'Number of lines in source code',
-            'IP_py': 'Number of IP address in source code',
-            'base64_py': 'Number of base64 chunks in source code',
-            'suspicious_tokens_py': 'Number of suspicious token in source code',
-            'URLs_in_strings_py': 'Number of URLs in source code strings',
-            'emails_in_file_py': 'Number of emails in source code'
+            'Number of words_x':'Number of Words in source code',
+            'Number of words_y':'Number of Words in metadata',
+            'Number of words':'Number of Words in source code',  # Fallback nếu không có merge
+            'lines_x':'Number of lines in source code',
+            'lines_y':'Number of lines in metadata',
+            'lines':'Number of lines in source code',  # Fallback
+            'IP_x':'Number of IP adress in source code',
+            'IP_y':'Number of IP adress in metadata',
+            'IP':'Number of IP adress in source code',  # Fallback
+            'base64_x':'Number of base64 chunks in source code',
+            'base64_y':'Number of base64 chunks in metadata',
+            'base64':'Number of base64 chunks in source code',  # Fallback
+            'sospicious token_x':'Number of sospicious token in source code',
+            'sospicious token_y':'Number of sospicious token in metadata',
+            'sospicious token':'Number of sospicious token in source code'  # Fallback
         }
-        database.rename(columns={k: v for k, v in rename_map.items() if k in database.columns}, inplace=True)
+        existing_renames = {k: v for k, v in rename_map.items() if k in database.columns}
+        if existing_renames:
+            database.rename(columns=existing_renames, inplace=True)
         
-        database = database.loc[:,~database.columns.duplicated()]
-
+        # Đảm bảo có cột metadata (nếu không có thì tạo với giá trị 0)
+        metadata_cols = [
+            'Number of Words in metadata',
+            'Number of lines in metadata',
+            'Number of IP adress in metadata',
+            'Number of base64 chunks in metadata',
+            'Number of sospicious token in metadata'
+        ]
+        for col in metadata_cols:
+            if col not in database.columns:
+                database[col] = 0
+        
         return database
