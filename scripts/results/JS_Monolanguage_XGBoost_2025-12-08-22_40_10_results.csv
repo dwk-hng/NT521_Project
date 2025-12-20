@@ -1,0 +1,25 @@
+Package Name,repository,Prediction,Malicious_Probability,Package_Type
+30-days-of-javascript-3.3.5,1,Benign,0.006246511,NPM
+abha-3.9.0,1,Malicious,0.94004005,NPM
+ace-colorpicker-rpk-0.0.13,1,Benign,0.03232351,NPM
+axios-1.13.2,1,Benign,0.0024959927,NPM
+bignum-0.12.2,1,Benign,0.14868271,NPM
+body-parser-2.2.1,1,Benign,0.0068048527,NPM
+bundled-deps-poc-1.0.0,1,Malicious,0.65834016,NPM
+chalk-5.6.2,1,Benign,0.03438926,NPM
+commander-14.0.2,1,Benign,0.011244454,NPM
+cors-2.8.5,1,Benign,0.02721156,NPM
+debug-4.4.3,1,Benign,0.009879147,NPM
+eslint-9.39.2,1,Benign,0.0022338342,NPM
+express-5.2.1,1,Benign,0.005152293,NPM
+ikarem-telemetry-100.1.2,1,Malicious,0.8902938,NPM
+jsondatatoruby-1.999.10,1,Malicious,0.98879707,NPM
+lodash-4.17.21,1,Benign,0.119037256,NPM
+mui-wrapper-icons-99.99.1,1,Malicious,0.8678821,NPM
+raven-hubspot-20.0.0,1,Malicious,0.97850287,NPM
+semver-7.7.3,1,Benign,0.025746675,NPM
+typescript-5.9.3,1,Benign,0.009364796,NPM
+uuid-13.0.0,1,Benign,0.07130171,NPM
+vscode-azure-mcp-server-1.0.0,1,Malicious,0.976309,NPM
+vue2-amis-custom-widget-pro-1.0.2,1,Benign,0.068695486,NPM
+webpack-5.104.1,1,Benign,0.0031182917,NPM
